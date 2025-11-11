@@ -1,0 +1,385 @@
+# QuantVerse uRISK - Unified Risk Intelligence & Surveillance Kernel
+# Comprehensive .gitignore for Financial AI/ML RAG System
+
+# ===================================
+# ENVIRONMENT & SECRETS
+# ===================================
+.env
+venv/
+env/
+ENV/
+.venv/
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+config/secrets.json
+config/api_keys.json
+
+# ===================================
+# PYTHON
+# ===================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*.ipynb
+
+# IPython
+profile_default/
+ipython_config.py
+
+# ===================================
+# ML MODELS & ARTIFACTS  
+# ===================================
+# Large model files (use Git LFS or external storage)
+models/
+*.pkl
+*.joblib
+*.h5
+*.hdf5
+*.onnx
+*.pb
+*.pt
+*.pth
+*.bin
+*.safetensors
+checkpoint-*/
+wandb/
+mlruns/
+.mlflow/
+
+# Model training artifacts
+experiments/
+runs/
+logs/
+tensorboard_logs/
+lightning_logs/
+
+# Model evaluation reports (keep structure, ignore large files)
+backend/ml_models/*/models/
+backend/ml_models/*/artifacts/
+backend/ml_models/*/checkpoints/
+!backend/ml_models/*/models/.gitkeep
+!backend/ml_models/*/artifacts/.gitkeep
+
+# ===================================
+# DATABASES & VECTOR STORES
+# ===================================
+# Vector database storage
+vector_db/
+chroma_db/
+qdrant_storage/
+*.db
+*.sqlite
+*.sqlite3
+
+# PostgreSQL dumps
+*.sql.gz
+*.dump
+postgres_data/
+
+# Redis dumps
+dump.rdb
+
+# ===================================
+# DATA FILES
+# ===================================
+# Large data files
+data/
+datasets/
+*.csv
+*.json
+*.parquet
+*.feather
+*.h5
+*.hdf
+!**/seed_*.sql
+!**/sample_*.json
+!**/test_*.csv
+
+# Financial data backups
+backups/
+historical_data/
+market_data_cache/
+
+# ===================================
+# LOGS & MONITORING
+# ===================================
+*.log
+logs/
+*.out
+*.err
+
+# Application logs
+backend/logs/
+ingestion.log
+anomaly_detection.log
+sentiment_analysis.log
+alpha_vantage_ingestion.log
+
+# Monitoring data
+prometheus_data/
+grafana_data/
+
+# ===================================
+# DOCKER & CONTAINERS
+# ===================================
+docker-compose.override.yml
+.dockerignore
+
+# ===================================
+# NODE.JS / FRONTEND
+# ===================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# Grunt intermediate storage
+.grunt
+
+# Bower dependency directory
+bower_components
+
+# node-waf configuration
+.lock-wscript
+
+# Compiled binary addons
+build/Release
+
+# Dependency directories
+jspm_packages/
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Optional REPL history
+.node_repl_history
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# dotenv environment variables file
+.env.test
+
+# parcel-bundler cache
+.cache
+.parcel-cache
+
+# Next.js build output
+.next
+out
+
+# Nuxt.js build / generate output
+.nuxt
+dist
+
+# Gatsby files
+.cache/
+public
+
+# Storybook build outputs
+.out
+.storybook-out
+
+# Temporary folders
+tmp/
+temp/
+
+# ===================================
+# IDE & EDITORS
+# ===================================
+# VSCode
+.vscode/
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+
+# PyCharm
+.idea/
+*.swp
+*.swo
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*~
+*.swp
+*.swo
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+auto-save-list
+tramp
+.\#*
+
+# ===================================
+# OS GENERATED FILES
+# ===================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# Linux
+*~
+
+# ===================================
+# CLOUD & DEPLOYMENT
+# ===================================
+# AWS
+.aws/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+*.tfvars
+.terraform/
+
+# Kubernetes
+*.kubeconfig
+
+# ===================================
+# FINANCIAL DATA SPECIFIC
+# ===================================
+# API rate limiting caches
+.rate_limit_cache
+.api_cache/
+
+# Trading data
+*.tick
+*.bar
+*.trade
+
+# Financial model outputs
+portfolio_data/
+risk_calculations/
+pnl_reports/
+
+# Market data vendor files
+bloomberg/
+refinitiv/
+alpha_vantage_cache/
+
+# ===================================
+# TESTING
+# ===================================
+.pytest_cache/
+test-results/
+test-reports/
+coverage-reports/
+
+# ===================================
+# DOCUMENTATION BUILD
+# ===================================
+docs/_build/
+docs/build/
+site/
+
+# ===================================
+# BACKUP & TEMPORARY FILES
+# ===================================
+*.bak
+*.backup
+*.tmp
+*.temp
+*~
+*.orig
+
+# Demo results and temporary outputs
+*_demo_results_*.json
+*_test_output.log
+*_validation_report.*
