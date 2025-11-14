@@ -7,7 +7,6 @@ Query → Risk Filter → Retrieve Evidence → Risk Assessment → JSON Respons
 
 import asyncio
 import json
-import hashlib
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any

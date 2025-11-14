@@ -164,7 +164,7 @@ class HighImpactPipelineManager:
             if sector_filter in self.high_impact_tickers:
                 return self.high_impact_tickers[sector_filter]
             else:
-                logger.error(f"❌ Invalid sector: {sector_filter}")
+                logger.error(f" Invalid sector: {sector_filter}")
                 return []
         
         # Return all tickers from all sectors
@@ -228,7 +228,7 @@ class HighImpactPipelineManager:
                     ticker_stats['failed_endpoints'] += 1
                     error_msg = f"API error or rate limit for {endpoint}"
                     ticker_stats['errors'].append(error_msg)
-                    logger.warning(f"⚠️ {ticker} - {endpoint}: {error_msg}")
+                    logger.warning(f"❌ {ticker} - {endpoint}: {error_msg}")
                 
                 self.stats['total_api_calls'] += 1
                 
@@ -239,7 +239,7 @@ class HighImpactPipelineManager:
                 ticker_stats['failed_endpoints'] += 1
                 error_msg = f"{endpoint}: {str(e)}"
                 ticker_stats['errors'].append(error_msg)
-                logger.error(f"❌ {ticker} - {endpoint}: {str(e)}")
+                logger.error(f" {ticker} - {endpoint}: {str(e)}")
                 self.stats['total_errors'] += 1
         
         duration = (datetime.now() - start_time).total_seconds()
@@ -269,23 +269,58 @@ class HighImpactPipelineManager:
         
         return ticker_stats
 
+    async def get_processed_tickers(self) -> List[str]:
+        """Get list of tickers that have already been processed successfully"""
+        try:
+            # Check for tickers that have OVERVIEW data (indicates complete processing)
+            query = """
+            SELECT DISTINCT ticker 
+            FROM alpha_vantage_data 
+            WHERE endpoint = 'OVERVIEW'
+            AND ticker IN ('AMZN', 'GOOGL', 'META', 'TSLA', 'AMD', 'AVGO', 'NFLX', 'AAPL', 'MSFT',
+                          'JPM', 'BAC', 'GS', 'WFC', 'MS',
+                          'XOM', 'CVX', 'COP',
+                          'BA', 'LMT', 'CAT', 'GE',
+                          'WMT', 'COST', 'MCD', 'HD', 'SBUX',
+                          'JNJ', 'PFE', 'MRK',
+                          'SPY', 'QQQ', 'IWM',
+                          'BTC-USD', 'ETH-USD')
+            ORDER BY ticker
+            """
+            result = await self.db.async_execute_query(query)
+            processed_tickers = [row['ticker'] for row in result] if result else []
+            logger.info(f" Found {len(processed_tickers)} already processed tickers: {', '.join(processed_tickers)}")
+            return processed_tickers
+        except Exception as e:
+            logger.warning(f" Could not check processed tickers: {str(e)}")
+            return []
+
     async def run_high_impact_ingestion(self, 
                                       sector_filter: Optional[str] = None,
-                                      max_tickers: Optional[int] = None) -> Dict:
+                                      max_tickers: Optional[int] = None,
+                                
+                                      resume: bool = False) -> Dict:
         """Run the complete high-impact ticker ingestion"""
         
-        logger.info("🚀 Starting High-Impact Ticker Ingestion Pipeline")
-        logger.info(f"📊 Session ID: {self.session_id}")
+        logger.info(" Starting High-Impact Ticker Ingestion Pipeline")
+        logger.info(f" Session ID: {self.session_id}")
         
         # Get ticker list
         tickers = self.get_all_tickers(sector_filter)
         
+        # Handle resume functionality
+        if resume:
+            processed_tickers = await self.get_processed_tickers()
+            original_count = len(tickers)
+            tickers = [t for t in tickers if t['ticker'] not in processed_tickers]
+            logger.info(f"🔄 Resume mode: Skipping {original_count - len(tickers)} already processed tickers")
+        
         if max_tickers:
             tickers = tickers[:max_tickers]
             
-        logger.info(f"🎯 Processing {len(tickers)} high-impact tickers")
+        logger.info(f" Processing {len(tickers)} high-impact tickers")
         if sector_filter:
-            logger.info(f"🔍 Sector filter: {sector_filter.upper()}")
+            logger.info(f" Sector filter: {sector_filter.upper()}")
         
         # Log ticker breakdown by sector
         sector_counts = {}
@@ -293,7 +328,7 @@ class HighImpactPipelineManager:
             sector = ticker_info.get('sector', 'unknown')
             sector_counts[sector] = sector_counts.get(sector, 0) + 1
         
-        logger.info("📈 Sector breakdown:")
+        logger.info(" Sector breakdown:")
         for sector, count in sector_counts.items():
             logger.info(f"   {sector.upper()}: {count} tickers")
         
@@ -312,10 +347,10 @@ class HighImpactPipelineManager:
                 logger.info(f"📊 Progress: {progress:.1f}% ({i}/{len(tickers)})")
                 
             except KeyboardInterrupt:
-                logger.warning("⚠️ Pipeline interrupted by user")
+                logger.warning(" Pipeline interrupted by user")
                 break
             except Exception as e:
-                logger.error(f"💥 Fatal error processing {ticker_info['ticker']}: {str(e)}")
+                logger.error(f" Fatal error processing {ticker_info['ticker']}: {str(e)}")
                 continue
         
         # Calculate final statistics
@@ -330,7 +365,7 @@ class HighImpactPipelineManager:
 
     async def create_assets_table_entries(self):
         """Create/update assets table with high-impact tickers"""
-        logger.info("📋 Creating assets table entries...")
+        logger.info(" Creating assets table entries...")
         
         sql_statements = []
         
@@ -368,41 +403,41 @@ class HighImpactPipelineManager:
         
         try:
             await self.db.async_execute_insert(insert_sql)
-            logger.info(f"✅ Updated assets table with {len(sql_statements)} high-impact tickers")
+            logger.info(f" Updated assets table with {len(sql_statements)} high-impact tickers")
         except Exception as e:
-            logger.error(f"❌ Failed to update assets table: {str(e)}")
+            logger.error(f" Failed to update assets table: {str(e)}")
 
 def print_completion_summary(stats: Dict):
     """Print a detailed completion summary"""
     print("\n" + "=" * 80)
     print("🎉 HIGH-IMPACT TICKER INGESTION COMPLETED!")
     print("=" * 80)
-    print(f"📊 Session ID: {stats['session_id']}")
-    print(f"📈 Total Records: {stats['total_records_inserted']:,}")
-    print(f"🎯 Total Tickers: {stats['total_tickers_processed']}")
-    print(f"✅ Successful: {len(stats['successful_tickers'])}")
-    print(f"❌ Failed: {len(stats['failed_tickers'])}")
-    print(f"⏱️ Duration: {stats['duration_seconds']:.1f} seconds")
-    print(f"📈 Rate: {stats['ingestion_rate_per_second']:.2f} records/second")
-    print(f"🔄 API Calls: {stats['total_api_calls']:,}")
-    print(f"❌ Errors: {stats['total_errors']}")
+    print(f" Session ID: {stats['session_id']}")
+    print(f" Total Records: {stats['total_records_inserted']:,}")
+    print(f" Total Tickers: {stats['total_tickers_processed']}")
+    print(f" Successful: {len(stats['successful_tickers'])}")
+    print(f" Failed: {len(stats['failed_tickers'])}")
+    print(f"⏱ Duration: {stats['duration_seconds']:.1f} seconds")
+    print(f" Rate: {stats['ingestion_rate_per_second']:.2f} records/second")
+    print(f" API Calls: {stats['total_api_calls']:,}")
+    print(f" Errors: {stats['total_errors']}")
     
     # Sector breakdown
     if stats['sector_stats']:
-        print("\n📊 SECTOR PERFORMANCE:")
+        print("\n SECTOR PERFORMANCE:")
         for sector, sector_stats in stats['sector_stats'].items():
             success_rate = (sector_stats['successful_tickers'] / sector_stats['tickers_processed'] * 100) if sector_stats['tickers_processed'] > 0 else 0
             print(f"   {sector.upper()}: {sector_stats['total_records']:,} records ({success_rate:.1f}% success)")
     
     # Top performers
     if stats.get('ticker_results'):
-        print("\n🏆 TOP PERFORMING TICKERS:")
+        print("\n TOP PERFORMING TICKERS:")
         top_tickers = sorted(stats['ticker_results'], key=lambda x: x['records'], reverse=True)[:10]
         for i, result in enumerate(top_tickers, 1):
             print(f"   {i}. {result['ticker']}: {result['records']:,} records ({result['sector']})")
     
     if stats['failed_tickers']:
-        print(f"\n⚠️ FAILED TICKERS: {', '.join(stats['failed_tickers'])}")
+        print(f"\n FAILED TICKERS: {', '.join(stats['failed_tickers'])}")
     
     print("=" * 80)
 
@@ -438,6 +473,12 @@ async def main():
         help='Show what would be processed without running'
     )
     
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='Resume from the last successfully processed ticker'
+    )
+    
     args = parser.parse_args()
     
     # Print banner
@@ -454,7 +495,7 @@ async def main():
         # Setup assets table if requested
         if args.setup_assets:
             await manager.create_assets_table_entries()
-            print("✅ Assets table updated successfully")
+            print(" Assets table updated successfully")
             return
         
         # Dry run
@@ -463,17 +504,18 @@ async def main():
             if args.max_tickers:
                 tickers = tickers[:args.max_tickers]
             
-            print(f"📊 Would process {len(tickers)} tickers:")
+            print(f" Would process {len(tickers)} tickers:")
             for ticker_info in tickers:
                 print(f"   {ticker_info['ticker']} ({ticker_info['name']}) - {ticker_info.get('sector', 'unknown')}")
             
-            print(f"🔄 Total API calls needed: {len(tickers) * len(manager.target_endpoints)}")
+            print(f" Total API calls needed: {len(tickers) * len(manager.target_endpoints)}")
             return
         
         # Run the ingestion
         final_stats = await manager.run_high_impact_ingestion(
             sector_filter=args.sector,
-            max_tickers=args.max_tickers
+            max_tickers=args.max_tickers,
+            resume=args.resume
         )
         
         # Print completion summary
@@ -482,11 +524,11 @@ async def main():
         logger.info("🎉 High-impact ingestion completed successfully!")
         
     except KeyboardInterrupt:
-        print("\n⚠️ High-impact ingestion interrupted by user")
+        print("\n High-impact ingestion interrupted by user")
         
     except Exception as e:
-        print(f"\n❌ High-impact ingestion failed: {str(e)}")
-        logger.error(f"💥 Fatal error: {str(e)}")
+        print(f"\n High-impact ingestion failed: {str(e)}")
+        logger.error(f" Fatal error: {str(e)}")
         sys.exit(1)
     
     finally:
@@ -501,5 +543,5 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n⚠️ Pipeline interrupted")
+        print("\n Pipeline interrupted")
         sys.exit(1)

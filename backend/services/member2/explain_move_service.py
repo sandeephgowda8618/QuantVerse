@@ -2,23 +2,18 @@
 Member 2: Sudden Market Move Explainer Service
 Core business logic for explaining sudden price movements with timestamp analysis.
 
-IMPLEMENTATION STATUS: TEMPLATE READY  
-TODO: Follow the implementation guide in docs/MEMBER2_EXPLAIN_MOVE_IMPLEMENTATION.md
+IMPLEMENTATION STATUS: FULLY IMPLEMENTED
 """
 
 import asyncio
 import logging
 from typing import Dict, List, Optional, Tuple
-from datetime import datetime, timedelta
-
-# TODO: Uncomment these when implementing
-# from ...db.queries.move_queries import MoveQueries
-# from ...rag_engine.vector_store import ChromaVectorStore
-# from ...rag_engine.llm_manager import LLMManager
-# from ...utils.time_utils import TimeUtils
-# from .explain_move_prompt import ExplainMovePrompt
+from datetime import datetime, timedelta, timezone
 
 from ...db.postgres_handler import PostgresHandler
+from ...rag_engine.vector_store import ChromaVectorStore
+from ...rag_engine.llm_manager import LLMManager
+from ...rag_engine.sudden_market_move_mode.market_move_pipeline import MarketMovePipeline
 from .explain_move_prompt import ExplainMovePrompt
 
 logger = logging.getLogger(__name__)
@@ -35,11 +30,22 @@ class ExplainMoveService:
     
     def __init__(self):
         self.db = PostgresHandler()
+        self.vector_store = ChromaVectorStore()
+        self.llm_manager = LLMManager()
+        self.pipeline = MarketMovePipeline(
+            vector_store=self.vector_store,
+            db_manager=self.db,
+            llm_manager=self.llm_manager
+        )
         self.prompt_builder = ExplainMovePrompt()
         
         # Configuration
         self.SIGNIFICANT_MOVE_THRESHOLD = 2.0  # 2% price change
         self.ANALYSIS_WINDOW_MINUTES = 30      # ±30 minutes around timestamp
+        self.MAX_EVIDENCE_ITEMS = 15          # Limit evidence for context
+        self.ANOMALY_LOOKBACK_DAYS = 30       # Expanded lookback for anomalies
+        self.NEWS_LOOKBACK_DAYS = 7           # Lookback for news
+        self.PRICE_LOOKBACK_DAYS = 5          # Lookback for price data
         
         logger.info("ExplainMoveService initialized")
     
@@ -70,358 +76,449 @@ class ExplainMoveService:
             timestamp: Target timestamp to analyze
             
         Returns:
-            Dict: Movement detection result with significance flag and data
+            Dict containing movement data and significance
         """
         try:
-            # Define time window for movement detection  
+            # Calculate time window
             start_time = timestamp - timedelta(minutes=self.ANALYSIS_WINDOW_MINUTES)
             end_time = timestamp + timedelta(minutes=self.ANALYSIS_WINDOW_MINUTES)
             
-            # Get price data around the timestamp
-            price_query = """
-            SELECT price, timestamp, volume
+            # Query for price data around the timestamp
+            query = """
+            SELECT 
+                timestamp,
+                open_price,
+                high_price,
+                low_price,
+                close_price,
+                volume
             FROM market_prices 
             WHERE ticker = $1 
             AND timestamp BETWEEN $2 AND $3
-            ORDER BY timestamp ASC
+            ORDER BY timestamp
             """
             
-            price_data = await self.db.async_execute_query(
-                price_query, (ticker, start_time, end_time)
+            prices = await self.db.async_execute_query(
+                query, (ticker, start_time, end_time)
             )
             
-            if not price_data or len(price_data) < 2:
+            if not prices:
                 return {
-                    "significant_move": False,
-                    "reason": "Insufficient price data",
-                    "price_change": {
-                        "start_price": 0.0,
-                        "end_price": 0.0,
-                        "percent_change": 0.0,
-                        "direction": "unknown"
-                    },
-                    "threshold_used": self.SIGNIFICANT_MOVE_THRESHOLD,
-                    "window_minutes": self.ANALYSIS_WINDOW_MINUTES
+                    'significant_move': False,
+                    'reason': 'No price data found for the specified time window'
                 }
             
-            # Calculate price change
-            start_price = float(price_data[0]['price'])
-            end_price = float(price_data[-1]['price'])
-            percent_change = ((end_price - start_price) / start_price) * 100
+            # Calculate price movement
+            first_price = prices[0]['open_price'] or prices[0]['close_price']
+            last_price = prices[-1]['close_price'] or prices[-1]['high_price']
+            
+            if not first_price or not last_price:
+                return {
+                    'significant_move': False,
+                    'reason': 'Insufficient price data'
+                }
+            
+            # Calculate percentage change
+            price_change_pct = ((last_price - first_price) / first_price) * 100
             
             # Check if movement is significant
-            is_significant = abs(percent_change) >= self.SIGNIFICANT_MOVE_THRESHOLD
-            
-            direction = "up" if percent_change > 0 else "down" if percent_change < 0 else "sideways"
+            is_significant = abs(price_change_pct) >= self.SIGNIFICANT_MOVE_THRESHOLD
             
             return {
-                "significant_move": is_significant,
-                "reason": f"Price moved {percent_change:.2f}%" if is_significant else "Movement below threshold",
-                "price_change": {
-                    "start_price": start_price,
-                    "end_price": end_price,
-                    "percent_change": percent_change,
-                    "direction": direction
-                },
-                "threshold_used": self.SIGNIFICANT_MOVE_THRESHOLD,
-                "window_minutes": self.ANALYSIS_WINDOW_MINUTES,
-                "data_points": len(price_data)
+                'significant_move': is_significant,
+                'price_change_pct': round(price_change_pct, 2),
+                'start_price': first_price,
+                'end_price': last_price,
+                'time_window': f"{start_time.isoformat()} to {end_time.isoformat()}",
+                'data_points': len(prices),
+                'volume_data': [p['volume'] for p in prices if p['volume']],
+                'threshold_used': self.SIGNIFICANT_MOVE_THRESHOLD
             }
             
         except Exception as e:
-            logger.error(f"Movement detection error: {str(e)}")
+            logger.error(f"Error detecting movement for {ticker}: {str(e)}")
             return {
-                "significant_move": False,
-                "reason": f"Detection error: {str(e)}",
-                "price_change": {
-                    "start_price": 0.0,
-                    "end_price": 0.0,
-                    "percent_change": 0.0,
-                    "direction": "unknown"
-                },
-                "threshold_used": self.SIGNIFICANT_MOVE_THRESHOLD,
-                "window_minutes": self.ANALYSIS_WINDOW_MINUTES
+                'significant_move': False,
+                'reason': f'Error during analysis: {str(e)}'
             }
     
     async def analyze_movement(self, ticker: str, timestamp: datetime) -> Dict:
         """
-        Main analysis function - gathers all evidence and generates explanation
+        Main analysis function that explains the movement
         
         Args:
             ticker: Stock ticker symbol
             timestamp: Target timestamp when movement occurred
             
         Returns:
-            Dict: Complete movement explanation with evidence
+            Dict containing explanation and evidence
         """
         try:
-            # Step 1: Detect the movement
-            movement_data = await self.detect_movement(ticker, timestamp)
+            # Gather comprehensive evidence
+            evidence = await self._gather_movement_evidence(ticker, timestamp)
             
-            if not movement_data['significant_move']:
-                return {
-                    "ticker": ticker,
-                    "summary": f"No significant movement detected for {ticker} around {timestamp.strftime('%Y-%m-%d %H:%M')}",
-                    "primary_causes": ["Movement below threshold"],
-                    "confidence": 0.8,
-                    "evidence_used": [],
-                    "movement_data": movement_data,
-                    "timestamp": timestamp.isoformat()
-                }
+            # Build LLM prompt with evidence
+            llm_prompt = self._build_movement_analysis_prompt(ticker, timestamp, evidence)
             
-            # Step 2: Gather supporting evidence
-            events = await self._get_related_events(ticker, timestamp)
-            sentiment_data = await self._get_sentiment_data(ticker, timestamp)
-            anomalies = await self._get_anomalies_around_time(ticker, timestamp)
-            
-            # Step 3: Generate analysis using available data
-            analysis = await self._generate_movement_analysis(
-                ticker, timestamp, movement_data, events, sentiment_data, anomalies
+            # Get LLM analysis
+            llm_response = await self.llm_manager.generate(
+                prompt=llm_prompt,
+                system_prompt=self._get_system_prompt()
             )
             
+            # Parse LLM response
+            analysis = self._parse_llm_response(llm_response)
+            
             return {
-                "ticker": ticker,
-                "summary": analysis.get('explanation', 'Movement analysis completed'),
-                "primary_causes": analysis.get('supporting_factors', []),
-                "confidence": analysis.get('confidence', 0.6),
-                "evidence_used": events + anomalies,
-                "movement_data": movement_data,
-                "market_implications": analysis.get('market_implications', ''),
-                "timestamp": timestamp.isoformat()
+                'ticker': ticker,
+                'summary': analysis.get('summary', 'Market movement analysis completed'),
+                'drivers': analysis.get('drivers', ['Analysis based on available evidence']),
+                'confidence': analysis.get('confidence', 0.6),
+                'evidence': evidence,  # Include the gathered evidence
+                'timestamp': timestamp.isoformat()
             }
             
         except Exception as e:
-            logger.error(f"Movement analysis error for {ticker}: {str(e)}")
+            logger.error(f"Error analyzing movement for {ticker}: {str(e)}")
             return {
-                "ticker": ticker,
-                "summary": f"Analysis error occurred: {str(e)}",
-                "primary_causes": ["Analysis error"],
-                "confidence": 0.1,
-                "evidence_used": [],
-                "movement_data": {},
-                "timestamp": timestamp.isoformat()
+                'ticker': ticker,
+                'summary': f'Analysis failed: {str(e)}',
+                'drivers': ['Technical error during analysis'],
+                'confidence': 0.0,
+                'evidence': {'anomalies': [], 'news': [], 'price_data': [], 'sentiment_events': []},
+                'timestamp': timestamp.isoformat()
             }
     
-    async def _get_related_events(self, ticker: str, timestamp: datetime) -> List[Dict]:
-        """Get events that occurred around the timestamp"""
+    async def find_recent_moves(self, ticker: str, hours_back: int = 24) -> List[Dict]:
+        """
+        Find recent significant moves for a ticker
+        
+        Args:
+            ticker: Stock ticker symbol
+            hours_back: How many hours back to search
+            
+        Returns:
+            List of significant movements with timestamps
+        """
         try:
-            start_time = timestamp - timedelta(hours=2)
-            end_time = timestamp + timedelta(hours=1)
+            # Calculate time range
+            end_time = datetime.now(timezone.utc)
+            start_time = end_time - timedelta(hours=hours_back)
             
-            # Check for earnings announcements
-            earnings_query = """
-            SELECT 'earnings' as type, fiscal_date_ending, reported_eps, estimated_eps, surprise_pct
-            FROM earnings_data 
-            WHERE ticker = $1 
-            AND fiscal_date_ending BETWEEN $2 AND $3
-            ORDER BY fiscal_date_ending DESC
-            LIMIT 3
-            """
-            
-            earnings = await self.db.async_execute_query(earnings_query, (ticker, start_time, end_time))
-            
-            events = []
-            for earning in earnings or []:
-                events.append({
-                    'source': 'earnings',
-                    'type': 'earnings',
-                    'description': f"Earnings: {earning['reported_eps']} vs {earning['estimated_eps']} est",
-                    'impact_score': abs(float(earning.get('surprise_pct', 0))),
-                    'timestamp': earning['fiscal_date_ending']
-                })
-            
-            # Check for news around the time
-            news_query = """
-            SELECT headline, sentiment, published_at
-            FROM news_headlines 
-            WHERE ticker = $1 
-            AND published_at BETWEEN $2 AND $3
-            ORDER BY relevance_score DESC
-            LIMIT 5
-            """
-            
-            news = await self.db.async_execute_query(news_query, (ticker, start_time, end_time))
-            
-            for article in news or []:
-                events.append({
-                    'source': 'news',
-                    'type': 'news',
-                    'description': article['headline'],
-                    'impact_score': abs(float(article.get('sentiment', 0))),
-                    'timestamp': article['published_at']
-                })
-            
-            return events
-            
-        except Exception as e:
-            logger.error(f"Error getting related events: {str(e)}")
-            return []
-    
-    async def _get_sentiment_data(self, ticker: str, timestamp: datetime) -> Dict:
-        """Get sentiment data around the timestamp"""
-        try:
-            start_time = timestamp - timedelta(hours=1)
-            end_time = timestamp + timedelta(hours=1)
-            
+            # Query for price data
             query = """
-            SELECT AVG(sentiment) as avg_sentiment, COUNT(*) as news_count
-            FROM news_headlines 
-            WHERE ticker = $1 
-            AND published_at BETWEEN $2 AND $3
-            """
-            
-            result = await self.db.async_execute_query(query, (ticker, start_time, end_time))
-            
-            if result and result[0]['avg_sentiment'] is not None:
-                return {
-                    'overall_sentiment': float(result[0]['avg_sentiment']),
-                    'news_count': int(result[0]['news_count']),
-                    'sentiment_label': 'positive' if result[0]['avg_sentiment'] > 0.1 else 'negative' if result[0]['avg_sentiment'] < -0.1 else 'neutral'
-                }
-            
-            return {'overall_sentiment': 0, 'news_count': 0, 'sentiment_label': 'neutral'}
-            
-        except Exception as e:
-            logger.error(f"Error getting sentiment data: {str(e)}")
-            return {'overall_sentiment': 0, 'news_count': 0, 'sentiment_label': 'neutral'}
-    
-    async def _get_anomalies_around_time(self, ticker: str, timestamp: datetime) -> List[Dict]:
-        """Get anomalies detected around the timestamp"""
-        try:
-            start_time = timestamp - timedelta(hours=1)
-            end_time = timestamp + timedelta(hours=1)
-            
-            query = """
-            SELECT anomaly_type, severity, description, detected_at, confidence_score
-            FROM anomalies 
-            WHERE ticker = $1 
-            AND detected_at BETWEEN $2 AND $3
-            ORDER BY confidence_score DESC
-            LIMIT 5
-            """
-            
-            anomalies = await self.db.async_execute_query(query, (ticker, start_time, end_time))
-            
-            result = []
-            for anomaly in anomalies or []:
-                result.append({
-                    'source': 'anomaly_detection',
-                    'type': anomaly['anomaly_type'],
-                    'description': anomaly['description'],
-                    'severity': anomaly['severity'],
-                    'confidence': float(anomaly['confidence_score']),
-                    'timestamp': anomaly['detected_at']
-                })
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error getting anomalies: {str(e)}")
-            return []
-    
-    async def _generate_movement_analysis(self, ticker: str, timestamp: datetime, 
-                                        movement_data: Dict, events: List[Dict], 
-                                        sentiment_data: Dict, anomalies: List[Dict]) -> Dict:
-        """Generate analysis based on collected evidence"""
-        
-        # For now, provide rule-based analysis
-        # TODO: This is where the RAG engine integration will be added
-        
-        price_change = movement_data['price_change']['percent_change']
-        direction = movement_data['price_change']['direction']
-        
-        explanation = f"{ticker} moved {direction} by {abs(price_change):.2f}% around {timestamp.strftime('%H:%M on %Y-%m-%d')}"
-        
-        supporting_factors = []
-        confidence = 0.5
-        
-        # Analyze events
-        if events:
-            earnings_events = [e for e in events if e['type'] == 'earnings']
-            if earnings_events:
-                supporting_factors.append(f"Earnings announcement detected with surprise factor")
-                confidence += 0.2
-            
-            news_events = [e for e in events if e['type'] == 'news']
-            if news_events:
-                supporting_factors.append(f"{len(news_events)} news articles published around the time")
-                confidence += 0.1
-        
-        # Analyze sentiment
-        if sentiment_data['news_count'] > 0:
-            sentiment_label = sentiment_data['sentiment_label']
-            if sentiment_label != 'neutral':
-                supporting_factors.append(f"News sentiment was {sentiment_label} around the movement")
-                confidence += 0.1
-        
-        # Analyze anomalies
-        if anomalies:
-            high_confidence_anomalies = [a for a in anomalies if a.get('confidence', 0) > 0.7]
-            if high_confidence_anomalies:
-                supporting_factors.append(f"{len(high_confidence_anomalies)} high-confidence anomalies detected")
-                confidence += 0.2
-        
-        if not supporting_factors:
-            supporting_factors.append("Movement occurred without clear immediate catalysts")
-            
-        market_implications = f"Monitor for continued {direction}ward momentum" if abs(price_change) > 3 else "Movement appears contained"
-        
-        return {
-            'explanation': explanation,
-            'supporting_factors': supporting_factors,
-            'confidence': min(0.95, confidence),
-            'market_implications': market_implications
-        }
-    
-    async def find_recent_moves(self, ticker: str, hours_back: int) -> List[Dict]:
-        """Find recent significant movements for a ticker"""
-        try:
-            cutoff_time = datetime.now() - timedelta(hours=hours_back)
-            
-            # Look for significant price movements in recent history
-            query = """
-            SELECT timestamp, price, volume
+            SELECT 
+                timestamp,
+                open_price,
+                close_price,
+                high_price,
+                low_price,
+                volume
             FROM market_prices 
             WHERE ticker = $1 
             AND timestamp >= $2
-            ORDER BY timestamp DESC
-            LIMIT 100
+            ORDER BY timestamp
             """
             
-            price_data = await self.db.async_execute_query(query, (ticker, cutoff_time))
+            prices = await self.db.async_execute_query(
+                query, (ticker, start_time)
+            )
             
-            movements = []
-            if len(price_data) >= 2:
-                for i in range(1, len(price_data)):
-                    current_price = float(price_data[i]['price'])
-                    prev_price = float(price_data[i-1]['price'])
+            if len(prices) < 2:
+                return []
+            
+            significant_moves = []
+            
+            # Analyze each time window for significant moves
+            for i in range(1, len(prices)):
+                prev_price = prices[i-1]['close_price'] or prices[i-1]['open_price']
+                curr_price = prices[i]['close_price'] or prices[i]['high_price']
+                
+                if prev_price and curr_price:
+                    change_pct = ((curr_price - prev_price) / prev_price) * 100
                     
-                    if prev_price > 0:
-                        percent_change = ((current_price - prev_price) / prev_price) * 100
-                        
-                        if abs(percent_change) >= self.SIGNIFICANT_MOVE_THRESHOLD:
-                            movements.append({
-                                'timestamp': price_data[i]['timestamp'],
-                                'price_change': percent_change,
-                                'price_before': prev_price,
-                                'price_after': current_price,
-                                'direction': 'up' if percent_change > 0 else 'down'
-                            })
+                    if abs(change_pct) >= self.SIGNIFICANT_MOVE_THRESHOLD:
+                        significant_moves.append({
+                            'timestamp': prices[i]['timestamp'].isoformat(),
+                            'price_change_pct': round(change_pct, 2),
+                            'from_price': prev_price,
+                            'to_price': curr_price,
+                            'volume': prices[i]['volume']
+                        })
             
-            return movements[:10]  # Return top 10
+            # Sort by absolute change magnitude
+            significant_moves.sort(key=lambda x: abs(x['price_change_pct']), reverse=True)
+            
+            return significant_moves[:10]  # Return top 10 moves
             
         except Exception as e:
-            logger.error(f"Error finding recent moves: {str(e)}")
+            logger.error(f"Error finding recent moves for {ticker}: {str(e)}")
             return []
-    pass
+    
+    async def get_movement_context(self, ticker: str, timestamp: datetime) -> Dict:
+        """
+        Get additional context around a movement for deeper analysis
+        
+        Args:
+            ticker: Stock ticker symbol  
+            timestamp: Target timestamp
+            
+        Returns:
+            Dict containing contextual information
+        """
+        try:
+            # Get anomalies around the timestamp
+            anomaly_query = """
+            SELECT 
+                timestamp,
+                anomaly_type,
+                severity,
+                description
+            FROM anomalies 
+            WHERE ticker = $1 
+            AND timestamp BETWEEN $2 AND $3
+            ORDER BY severity DESC
+            LIMIT 5
+            """
+            
+            start_time = timestamp - timedelta(hours=2)
+            end_time = timestamp + timedelta(hours=2)
+            
+            anomalies = await self.db.async_execute_query(
+                anomaly_query, (ticker, start_time, end_time)
+            )
+            
+            # Get news sentiment around the timestamp
+            sentiment_query = """
+            SELECT 
+                timestamp,
+                sentiment_score,
+                headline,
+                source
+            FROM news_sentiment 
+            WHERE ticker = $1 
+            AND timestamp BETWEEN $2 AND $3
+            ORDER BY ABS(sentiment_score) DESC
+            LIMIT 5
+            """
+            
+            sentiment = await self.db.async_execute_query(
+                sentiment_query, (ticker, start_time, end_time)
+            )
+            
+            return {
+                'anomalies': [dict(a) for a in anomalies],
+                'sentiment_events': [dict(s) for s in sentiment],
+                'context_window': f"{start_time.isoformat()} to {end_time.isoformat()}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting movement context for {ticker}: {str(e)}")
+            return {
+                'anomalies': [],
+                'sentiment_events': [],
+                'context_window': 'Error retrieving context'
+            }
+    
+    async def _gather_movement_evidence(self, ticker: str, timestamp: datetime) -> Dict:
+        """Gather evidence around the movement timestamp"""
+        try:
+            evidence = {
+                'anomalies': [],
+                'news': [],
+                'price_data': [],
+                'sentiment_events': []
+            }
+            
+            # Get anomalies around the timestamp (30 days window)
+            anomaly_query = """
+            SELECT anomaly_type, severity, description, detected_at, confidence_score
+            FROM anomalies 
+            WHERE ticker = $1 
+            AND detected_at >= $2 - INTERVAL '30 days'
+            AND detected_at <= $2 + INTERVAL '30 days'
+            ORDER BY detected_at DESC, confidence_score DESC
+            LIMIT 5
+            """
+            
+            anomaly_result = await self.db.async_execute_query(anomaly_query, (ticker, timestamp))
+            evidence['anomalies'] = [dict(row) for row in anomaly_result] if anomaly_result else []
+            
+            # Get news around the timestamp (7 days window)
+            news_query = """
+            SELECT headline, sentiment, relevance_score, published_at
+            FROM news_headlines 
+            WHERE ticker = $1 
+            AND published_at >= $2 - INTERVAL '7 days'
+            AND published_at <= $2 + INTERVAL '7 days'
+            ORDER BY published_at DESC, relevance_score DESC
+            LIMIT 5
+            """
+            
+            news_result = await self.db.async_execute_query(news_query, (ticker, timestamp))
+            evidence['news'] = [dict(row) for row in news_result] if news_result else []
+            
+            # Get price data around the timestamp (5 days window)
+            price_query = """
+            SELECT price, volume, price_change_pct, timestamp, open_price, high_price, low_price, close_price
+            FROM market_prices 
+            WHERE ticker = $1 
+            AND timestamp >= $2 - INTERVAL '5 days'
+            AND timestamp <= $2 + INTERVAL '5 days'
+            ORDER BY timestamp DESC
+            LIMIT 10
+            """
+            
+            price_result = await self.db.async_execute_query(price_query, (ticker, timestamp))
+            evidence['price_data'] = [dict(row) for row in price_result] if price_result else []
+            
+            return evidence
+            
+        except Exception as e:
+            logger.error(f"Error gathering movement evidence for {ticker}: {str(e)}")
+            return {'anomalies': [], 'news': [], 'price_data': [], 'sentiment_events': []}
+    
+    def _build_movement_analysis_prompt(self, ticker: str, timestamp: datetime, evidence: Dict) -> str:
+        """Build LLM prompt for movement analysis"""
+        anomalies = evidence.get('anomalies', [])
+        news = evidence.get('news', [])
+        price_data = evidence.get('price_data', [])
+        
+        prompt = f"""Analyze the market movement for {ticker} at {timestamp.isoformat()} based on available evidence.
 
-class TimeUtils:
-    """
-    Time manipulation utilities
-    TODO: Implement following the guide
-    """
-    pass
+ANOMALY DATA ({len(anomalies)} items):
+{self._format_anomalies_for_prompt(anomalies)}
 
+NEWS EVENTS ({len(news)} items):
+{self._format_news_for_prompt(news)}
+
+PRICE DATA ({len(price_data)} items):
+{self._format_price_data_for_prompt(price_data)}
+
+Based on this evidence, explain what caused the market movement:
+
+1. **SUMMARY**: A clear 2-3 sentence explanation of what happened
+2. **DRIVERS**: 3-5 specific factors that contributed to the movement
+3. **CONFIDENCE**: 0.0-1.0 based on evidence quality and correlation
+
+CONFIDENCE GUIDELINES:
+- Strong correlation between events and movement: 0.7-0.9
+- Moderate correlation with some supporting evidence: 0.5-0.7
+- Weak correlation or limited evidence: 0.2-0.5
+- No clear correlation: 0.0-0.2
+
+Respond in this EXACT JSON format:
+{{
+    "summary": "Clear explanation of the movement...",
+    "drivers": [
+        "Specific driver 1 based on evidence",
+        "Specific driver 2 based on evidence",
+        "Specific driver 3 based on evidence"
+    ],
+    "confidence": 0.75
+}}"""
+        
+        return prompt
+    
+    def _get_system_prompt(self) -> str:
+        """Get system prompt for movement analysis"""
+        return """You are an expert market analyst specializing in explaining sudden price movements. Analyze the provided evidence and identify the most likely causes of market movements. Focus on correlation between events and price action. Be objective and evidence-based."""
+    
+    def _parse_llm_response(self, response: str) -> Dict:
+        """Parse LLM response for movement analysis"""
+        try:
+            import json
+            import re
+            
+            # Try direct JSON parsing first
+            try:
+                parsed = json.loads(response.strip())
+                return {
+                    'summary': parsed.get('summary', 'Market movement analysis completed'),
+                    'drivers': parsed.get('drivers', ['Analysis based on available data']),
+                    'confidence': min(max(float(parsed.get('confidence', 0.5)), 0.0), 1.0)
+                }
+            except json.JSONDecodeError:
+                # Extract from markdown or other formatting
+                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', response, re.DOTALL)
+                if json_match:
+                    parsed = json.loads(json_match.group(1))
+                    return {
+                        'summary': parsed.get('summary', 'Market movement analysis completed'),
+                        'drivers': parsed.get('drivers', ['Analysis based on available data']),
+                        'confidence': min(max(float(parsed.get('confidence', 0.5)), 0.0), 1.0)
+                    }
+                
+                # Fallback parsing
+                summary_match = re.search(r'"summary":\s*"([^"]*)"', response)
+                drivers_match = re.search(r'"drivers":\s*\[(.*?)\]', response, re.DOTALL)
+                confidence_match = re.search(r'"confidence":\s*([0-9.]+)', response)
+                
+                summary = summary_match.group(1) if summary_match else 'Market movement analysis completed'
+                
+                drivers = ['Analysis based on available data']
+                if drivers_match:
+                    driver_matches = re.findall(r'"([^"]*)"', drivers_match.group(1))
+                    if driver_matches:
+                        drivers = driver_matches
+                
+                confidence = 0.5
+                if confidence_match:
+                    confidence = min(max(float(confidence_match.group(1)), 0.0), 1.0)
+                
+                return {
+                    'summary': summary,
+                    'drivers': drivers,
+                    'confidence': confidence
+                }
+                
+        except Exception as e:
+            logger.error(f"Error parsing movement analysis response: {e}")
+            return {
+                'summary': response[:200] + "..." if len(response) > 200 else response,
+                'drivers': ['Analysis based on available evidence'],
+                'confidence': 0.5
+            }
+    
+    def _format_anomalies_for_prompt(self, anomalies: List[Dict]) -> str:
+        """Format anomalies for LLM prompt"""
+        if not anomalies:
+            return "No anomalies detected"
+        
+        formatted = []
+        for anomaly in anomalies[:3]:
+            formatted.append(f"- {anomaly.get('detected_at')}: {anomaly.get('anomaly_type', 'Unknown')} - {anomaly.get('description', 'N/A')} (Confidence: {anomaly.get('confidence_score', 0):.2f})")
+        
+        return "\n".join(formatted)
+    
+    def _format_news_for_prompt(self, news: List[Dict]) -> str:
+        """Format news for LLM prompt"""
+        if not news:
+            return "No relevant news found"
+        
+        formatted = []
+        for item in news[:3]:
+            sentiment = item.get('sentiment', 'neutral')
+            formatted.append(f"- {item.get('published_at')}: {item.get('headline', 'N/A')} (Sentiment: {sentiment})")
+        
+        return "\n".join(formatted)
+    
+    def _format_price_data_for_prompt(self, price_data: List[Dict]) -> str:
+        """Format price data for LLM prompt"""
+        if not price_data:
+            return "No price data available"
+        
+        if len(price_data) >= 2:
+            recent = price_data[0]
+            older = price_data[-1]
+            
+            if recent.get('price') and older.get('price'):
+                price_change = ((float(recent['price']) - float(older['price'])) / float(older['price'])) * 100
+                return f"Price movement: {older['price']} → {recent['price']} ({price_change:+.2f}%) over {len(price_data)} data points"
+        
+        return f"Recent price: ${price_data[0].get('price', 'N/A')} (Volume: {price_data[0].get('volume', 'N/A')})"
+
+# ...existing code...
 """
 IMPLEMENTATION CHECKLIST:
 

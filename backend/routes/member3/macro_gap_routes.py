@@ -1,6 +1,6 @@
 """
-Member 3: Macro-Driven Gap Forecaster Route  
-REST API endpoint for predicting overnight gaps based on macro events.
+Member 3: Macro-Driven Gap Forecaster Routes
+REST API endpoints for predicting overnight gaps based on macro events.
 """
 
 import logging
@@ -29,14 +29,28 @@ class MacroGapRequest(BaseModel):
             raise ValueError('Question must be at least 10 characters')
         return v
 
+class BatchGapRequest(BaseModel):
+    assets: List[str]
+    event_context: Optional[str] = ""
+    
+    @validator('assets')
+    def validate_assets(cls, v):
+        if not v or len(v) == 0:
+            raise ValueError('At least one asset must be provided')
+        if len(v) > 10:
+            raise ValueError('Maximum 10 assets allowed per batch request')
+        return [asset.upper() for asset in v]
+
 class MacroGapResponse(BaseModel):
     asset: str
-    gap_prediction: dict
+    gap_prediction: str
     primary_catalyst: str
     supporting_factors: List[str]
     confidence: float
     risk_scenarios: List[str]
     macro_events: List[dict]
+    historical_context: Optional[dict] = None
+    evidence: Optional[dict] = None  # Include evidence field
     timestamp: str
 
 # Router setup
@@ -64,52 +78,17 @@ async def predict_macro_gap(request: MacroGapRequest):
     ```
     """
     try:
-        # TODO: Implement when service is ready
         # Validate asset exists
-        # if not await gap_service.validate_asset(request.asset):
-        #     raise HTTPException(status_code=400, detail=f"Asset {request.asset} not supported")
-        
-        # Check for recent macro events
-        # macro_events = await gap_service.detect_recent_macro_events(request.asset)
-        # if not macro_events:
-        #     raise HTTPException(status_code=404, detail="No recent macro events found")
+        if not await gap_service.validate_asset(request.asset):
+            raise HTTPException(status_code=400, detail=f"Asset {request.asset} not supported")
         
         # Generate gap prediction
-        # result = await gap_service.predict_gap(
-        #     asset=request.asset,
-        #     question=request.question
-        # )
-        
-        # return MacroGapResponse(**result)
-        
-        # PLACEHOLDER RESPONSE - Remove when implementing
-        return MacroGapResponse(
+        result = await gap_service.predict_gap(
             asset=request.asset,
-            expected_gap="neutral",
-            drivers=[
-                "Service not yet implemented",
-                "Please follow the implementation guide",
-                "Refer to MEMBER3_MACRO_GAP_IMPLEMENTATION.md"
-            ],
-            confidence=0.0,
-            evidence_used=[{
-                "source": "placeholder",
-                "snippet": "This is a template response. Implement the service layer to activate real gap analysis.",
-                "timestamp": "2025-11-10T00:00:00Z"
-            }],
-            historical_context=HistoricalContext(
-                similar_events=0,
-                gap_up_probability=0.5,
-                gap_down_probability=0.5,
-                average_gap_size=0.0,
-                confidence_from_history=0.0
-            ),
-            macro_sentiment={
-                "score": 0.0,
-                "trend": "neutral",
-                "message": "Implement service to get real sentiment data"
-            }
+            question=request.question
         )
+        
+        return MacroGapResponse(**result)
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -118,21 +97,20 @@ async def predict_macro_gap(request: MacroGapRequest):
         raise HTTPException(status_code=500, detail="Internal server error")
 
 @router.get("/macro-events/{asset}")
-async def get_recent_macro_events(asset: str, days_back: int = 7):
+async def get_recent_macro_events(asset: str, days_ahead: int = 7):
     """
-    Helper endpoint to show recent macro events for an asset
+    Get upcoming macro events that could affect gaps
     """
     try:
-        # TODO: Implement when service is ready
-        # events = await gap_service.get_macro_events_summary(asset, days_back)
-        # return {"asset": asset, "recent_events": events}
+        if not await gap_service.validate_asset(asset):
+            raise HTTPException(status_code=400, detail=f"Asset {asset} not supported")
         
-        # PLACEHOLDER RESPONSE
+        events = await gap_service.get_macro_events(asset, days_ahead)
         return {
             "asset": asset.upper(),
-            "recent_events": [],
-            "analysis_suitable": False,
-            "message": "Implement MacroGapService to get real macro events"
+            "upcoming_events": events,
+            "days_ahead": days_ahead,
+            "total_events": len(events)
         }
         
     except Exception as e:
@@ -140,57 +118,37 @@ async def get_recent_macro_events(asset: str, days_back: int = 7):
         raise HTTPException(status_code=500, detail="Error retrieving macro events")
 
 @router.get("/gap-history/{asset}")
-async def get_gap_history(asset: str, event_type: Optional[str] = None, limit: int = 20):
+async def get_gap_history(asset: str, days_back: int = 90):
     """
-    Get historical gap data for an asset after specific event types
+    Get historical gap data for an asset
     """
     try:
-        # TODO: Implement when service is ready
-        # history = await gap_service.get_historical_gaps(asset, event_type, limit)
-        # return {"asset": asset, "historical_gaps": history}
+        if not await gap_service.validate_asset(asset):
+            raise HTTPException(status_code=400, detail=f"Asset {asset} not supported")
         
-        # PLACEHOLDER RESPONSE
+        history = await gap_service.get_gap_history(asset, days_back)
         return {
             "asset": asset.upper(),
-            "event_type": event_type or "all",
-            "historical_gaps": [],
-            "message": "Implement MacroGapService to get real gap history"
+            "historical_gaps": history,
+            "days_analyzed": days_back,
+            "total_gaps": len(history)
         }
         
     except Exception as e:
         logger.error(f"Gap history error: {str(e)}")
         raise HTTPException(status_code=500, detail="Error retrieving gap history")
 
-@router.post("/batch-gap-prediction")
-async def predict_gaps_for_multiple_assets(assets: List[str], macro_event_description: str):
+@router.post("/batch-gap-prediction", response_model=List[dict])
+async def predict_gaps_for_multiple_assets(request: BatchGapRequest):
     """
-    Predict gap impact across multiple assets for a single macro event
+    Predict gap impact across multiple assets
     """
     try:
-        # TODO: Implement when service is ready
-        # results = []
-        # for asset in assets[:10]:  # Limit to 10 assets
-        #     try:
-        #         prediction = await gap_service.predict_gap(
-        #             asset=asset,
-        #             question=f"Impact of: {macro_event_description}"
-        #         )
-        #         results.append({"asset": asset, "prediction": prediction})
-        #     except Exception as e:
-        #         results.append({"asset": asset, "error": str(e)})
-        # return {"predictions": results}
-        
-        # PLACEHOLDER RESPONSE
-        return {
-            "predictions": [
-                {
-                    "asset": asset.upper(),
-                    "prediction": "Service not implemented",
-                    "message": "Implement MacroGapService to activate batch predictions"
-                }
-                for asset in assets[:10]
-            ]
-        }
+        results = await gap_service.batch_gap_prediction(
+            assets=request.assets,
+            event_context=request.event_context or ""
+        )
+        return results
         
     except Exception as e:
         logger.error(f"Batch prediction error: {str(e)}")
@@ -201,10 +159,46 @@ async def macro_gap_health():
     """Health check for macro gap service"""
     return {
         "service": "macro_gap",
-        "status": "template_ready",
-        "message": "Implement MacroGapService to activate",
-        "implementation_guide": "docs/MEMBER3_MACRO_GAP_IMPLEMENTATION.md"
+        "status": "active",
+        "message": "Macro gap forecasting service is running",
+        "supported_assets": list(gap_service.SUPPORTED_ASSETS)
     }
+
+@router.get("/macro-gap/sentiment/{asset}")
+async def get_sentiment_analysis(asset: str, hours_back: int = 24):
+    """Get sentiment analysis that could affect gap formation"""
+    try:
+        if not await gap_service.validate_asset(asset):
+            raise HTTPException(status_code=400, detail=f"Asset {asset} not supported")
+        
+        sentiment = await gap_service.get_sentiment_analysis(asset, hours_back)
+        return {
+            "asset": asset.upper(),
+            "sentiment_analysis": sentiment,
+            "hours_analyzed": hours_back
+        }
+        
+    except Exception as e:
+        logger.error(f"Sentiment analysis error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error retrieving sentiment")
+
+@router.get("/macro-gap/patterns/{asset}")
+async def get_gap_patterns(asset: str, event_type: str = "FOMC"):
+    """Get historical gap patterns for specific macro event types"""
+    try:
+        if not await gap_service.validate_asset(asset):
+            raise HTTPException(status_code=400, detail=f"Asset {asset} not supported")
+        
+        patterns = await gap_service.analyze_gap_patterns(asset, event_type)
+        return {
+            "asset": asset.upper(),
+            "event_type": event_type,
+            "pattern_analysis": patterns
+        }
+        
+    except Exception as e:
+        logger.error(f"Pattern analysis error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error analyzing patterns")
 
 # TODO: Add these endpoints when implementing
 """

@@ -58,6 +58,41 @@ class GapForecastPipeline(BasePipeline):
         
         logger.info("GapForecastPipeline initialized successfully")
 
+    async def process_query(self, query: str, **kwargs) -> Dict[str, Any]:
+        """
+        Implementation of abstract method from BasePipeline.
+        Processes gap prediction queries with macro event context.
+        
+        Args:
+            query: User query about gap prediction
+            **kwargs: Additional parameters including asset, timeframe, etc.
+            
+        Returns:
+            Dict containing gap prediction analysis
+        """
+        try:
+            # Extract parameters
+            asset = kwargs.get('asset', kwargs.get('ticker', 'UNKNOWN'))
+            timeframe = kwargs.get('timeframe', 'next_session')
+            macro_context = kwargs.get('macro_event_context')
+            
+            # Delegate to specialized gap query processor
+            return await self.process_gap_query(
+                query=query,
+                asset=asset,
+                macro_event_context=macro_context,
+                timeframe=timeframe
+            )
+            
+        except Exception as e:
+            logger.error(f"Gap prediction query processing failed: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'asset': kwargs.get('asset', 'UNKNOWN'),
+                'query': query
+            }
+
     async def process_gap_query(
         self, 
         query: str, 
@@ -84,7 +119,7 @@ class GapForecastPipeline(BasePipeline):
             
             # Check cache first
             cache_key = f"gap_forecast:{asset}:{hash(query)}:{timeframe}"
-            cached_result = await self.cache.get(cache_key)
+            cached_result = await self.cache.get_cached_gap_prediction(cache_key)
             if cached_result:
                 logger.info(f"Returning cached gap prediction for {asset}")
                 return cached_result
@@ -113,7 +148,7 @@ class GapForecastPipeline(BasePipeline):
             )
             
             # Cache the result
-            await self.cache.set(cache_key, formatted_response, ttl=1800)  # 30 minutes
+            await self.cache.cache_gap_prediction(cache_key, formatted_response)  # 30 minutes
             
             logger.info(f"Gap prediction completed for {asset}")
             return formatted_response
@@ -140,14 +175,16 @@ class GapForecastPipeline(BasePipeline):
             Detected macro events with classifications
         """
         try:
-            # Get upcoming macro events
-            upcoming_events = await self.retriever.get_upcoming_macro_events(
-                asset, timeframe
+            # Get upcoming macro events (upcoming 24 hours)
+            upcoming_events = await self.retriever.get_macro_announcements(
+                event_types=['fomc', 'rbi', 'regulatory'], 
+                time_window=24
             )
             
-            # Get recent macro announcements
-            recent_events = await self.retriever.get_recent_macro_events(
-                asset, days_back=5
+            # Get recent macro announcements (last 5 days)
+            recent_events = await self.retriever.get_macro_announcements(
+                event_types=['fomc', 'rbi', 'regulatory', 'economic'], 
+                time_window=24 * 5  # 5 days in hours
             )
             
             # Classify event types and impact
@@ -201,7 +238,7 @@ class GapForecastPipeline(BasePipeline):
                 
                 # Get historical gaps after similar events
                 historical_gaps = await self.retriever.get_historical_gaps(
-                    asset, event_type, lookback_days=730  # 2 years
+                    asset, event_type, lookback_period=730  # 2 years
                 )
                 
                 if historical_gaps:
@@ -256,8 +293,11 @@ class GapForecastPipeline(BasePipeline):
         """
         try:
             # Use LLM to generate prediction
-            prediction_data = await self.llm.generate_gap_prediction(
-                macro_context, historical_data, asset
+            prediction_data = await self.llm.predict_gap_direction(
+                macro_events=macro_context.get('events', []),
+                historical_patterns=historical_data.get('patterns', []),
+                market_context=macro_context.get('market_context', {}),
+                asset=asset
             )
             
             # Calculate confidence based on pattern strength and event clarity

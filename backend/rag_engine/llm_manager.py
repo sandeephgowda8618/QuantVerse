@@ -495,4 +495,3 @@ class LLMManager:
             str: Detected intent ('core_risk', 'options_flow', 'market_move', 'macro_gap')
         """
         return IntentRouter.detect_intent(user_query)
-```
